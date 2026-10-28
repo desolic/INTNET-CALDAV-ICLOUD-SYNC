@@ -34,8 +34,10 @@ Container neu starten.
 ## Sicherheitsmerkmale
 
 - Läuft unprivilegiert (`PUID`/`PGID`, Privilege-Drop via `gosu`), `tini` als PID 1.
-- Zugangsdaten werden **nicht** im gemounteten Volume persistiert; die Config wird
-  ephemer mit `chmod 600` erzeugt (keine `sed`/`envsubst`-Injection).
+- **Kein Passwort wird in die Config geschrieben.** vdirsyncer holt die Zugangsdaten
+  zur Laufzeit per `*.fetch`-Kommando (`cat`/`printenv`) direkt aus Docker-Secret
+  bzw. Umgebungsvariable – weder die (ephemere, `chmod 600`) Config-Datei noch das
+  Log enthalten je ein Klartext-Credential. Config-Erzeugung injection-sicher (kein `sed`/`envsubst`).
 - HTTPS für die Synology-URL wird erzwungen; TLS-Verifizierung standardmäßig aktiv.
 - Größenbasierte Log-Rotation; Base-Image und `vdirsyncer` sind versionsgepinnt.
 

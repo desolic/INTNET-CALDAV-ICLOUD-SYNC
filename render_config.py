@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Erzeugt die vdirsyncer-Config aus Umgebungsvariablen/Secrets.
 
-Bewusst TOML-sicher (json.dumps) statt sed/envsubst, damit Sonderzeichen in
-Passwörtern oder Kalender-IDs weder die Config zerschießen noch eine Injection
-ermöglichen. Pflichtwerte werden validiert, HTTPS wird erzwungen.
+Sicherheitsprinzip: Geheimnisse (Benutzername/Passwort) werden NICHT in die
+Config geschrieben. Stattdessen holt vdirsyncer sie zur Laufzeit per
+``*.fetch``-Kommando (``cat <secret-datei>`` bzw. ``printenv <VAR>``). Dadurch
+steht nirgends - weder in der Config-Datei noch auf stdout/im Log - ein
+Klartext-Credential. Dieses Skript liest die Geheimniswerte selbst nie ein.
 """
 import json
 import os
@@ -16,15 +18,32 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
-def secret(name: str, required: bool = True) -> str:
-    """Liest VAR oder - bevorzugt - die Datei aus VAR_FILE (Docker-Secret-Konvention)."""
-    file_var = os.environ.get(f"{name}_FILE")
-    if file_var:
+def fetch_cmd(name: str) -> list:
+    """vdirsyncer-.fetch-Kommando fuer ein Geheimnis - OHNE den Wert zu lesen.
+
+    Bevorzugt die Datei aus NAME_FILE (Docker-Secret-Konvention), sonst die
+    Umgebungsvariable NAME. Nur Pfad bzw. Variablenname (nicht der Wert) landen
+    in der Config; vdirsyncer fuehrt das Kommando erst beim Sync aus.
+    """
+    file_path = os.environ.get(f"{name}_FILE")
+    if file_path:
+        if not os.path.isfile(file_path):
+            fail(f"{name}_FILE verweist auf keine Datei: {file_path}")
+        return ["command", "cat", file_path]
+    if os.environ.get(name, "") != "":
+        return ["command", "printenv", name]
+    fail(f"Pflichtvariable fehlt: {name} (oder {name}_FILE)")
+
+
+def value(name: str, required: bool = True) -> str:
+    """Liest einen NICHT-geheimen Wert (z. B. URL) aus NAME_FILE oder NAME."""
+    file_path = os.environ.get(f"{name}_FILE")
+    if file_path:
         try:
-            with open(file_var, encoding="utf-8") as fh:
-                val = fh.read().strip("\n")
+            with open(file_path, encoding="utf-8") as fh:
+                val = fh.read().strip()
         except OSError as exc:
-            fail(f"Secret-Datei fuer {name} nicht lesbar: {exc}")
+            fail(f"{name}_FILE nicht lesbar: {exc}")
     else:
         val = os.environ.get(name, "")
     if required and not val:
@@ -32,18 +51,20 @@ def secret(name: str, required: bool = True) -> str:
     return val
 
 
-def q(value: str) -> str:
-    """TOML-/JSON-sicher gequotete Zeichenkette (escaped \" und \\)."""
-    return json.dumps(value)
+def q(val: str) -> str:
+    """TOML-/JSON-sicher gequotete Zeichenkette."""
+    return json.dumps(val)
 
 
 def main() -> None:
-    apple_id = secret("APPLE_ID")
-    apple_pw = secret("APPLE_APP_PASSWORD")
-    syno_url = secret("SYNOLOGY_CALDAV_URL")
-    syno_user = secret("SYNOLOGY_USER")
-    syno_pw = secret("SYNOLOGY_PASSWORD")
+    # Pflicht-Geheimnisse muessen vorhanden sein (ohne den Wert zu lesen)
+    icloud_user = json.dumps(fetch_cmd("APPLE_ID"))
+    icloud_pass = json.dumps(fetch_cmd("APPLE_APP_PASSWORD"))
+    syno_user = json.dumps(fetch_cmd("SYNOLOGY_USER"))
+    syno_pass = json.dumps(fetch_cmd("SYNOLOGY_PASSWORD"))
 
+    # URL ist nicht geheim -> wird validiert und eingebettet
+    syno_url = value("SYNOLOGY_CALDAV_URL")
     if urllib.parse.urlparse(syno_url).scheme != "https":
         fail("SYNOLOGY_CALDAV_URL muss HTTPS verwenden (Klartext-Uebertragung ist verboten).")
 
@@ -92,14 +113,14 @@ conflict_resolution = {q(conflict)}
 [storage iCloud]
 type = "caldav"
 url = "https://caldav.icloud.com/"
-username = {q(apple_id)}
-password = {q(apple_pw)}
+username.fetch = {icloud_user}
+password.fetch = {icloud_pass}
 
 [storage Synology]
 type = "caldav"
 url = {q(syno_url)}
-username = {q(syno_user)}
-password = {q(syno_pw)}
+username.fetch = {syno_user}
+password.fetch = {syno_pass}
 {verify_line}"""
     )
 
